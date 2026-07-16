@@ -1,0 +1,9 @@
+pydantic-ai
+pydantic
+streamlit
+pymongo
+python-dotenv
+httpx
+openai
+tavily-python
+logfire[pydantic-ai,httpx,pymongo,openai]

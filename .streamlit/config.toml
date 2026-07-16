@@ -1,0 +1,19 @@
+[server]
+port = 3000
+address = "127.0.0.1"
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+enableWebsocketCompression = false
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#f4a261"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+font = "monospace"
