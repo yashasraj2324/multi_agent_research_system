@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-
 from tavily import TavilyClient
 
 from ..core.config import config

@@ -1,0 +1,28 @@
+[project]
+name = "research"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10, <3.14"
+dependencies = [
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-exporter-otlp>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-semantic-conventions>=0.65b0",
+    "opentelemetry-instrumentation-openai>=0.33.0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-pymongo>=0.48b0",
+    "opentelemetry-instrumentation-requests>=0.48b0",
+    "opentelemetry-instrumentation-logging>=0.48b0",
+    "pydantic-settings>=2.14.2",
+    "logfire>=4.39.0",
+    "pydantic-ai>=2.22.0",
+    "openai>=2.52.0",
+    "arxiv>=4.0.1",
+    "streamlit>=1.60.0",
+    "tavily-python>=0.7.27",
+    "pymongo>=4.10.0",
+    "python-dotenv>=1.0.1",
+    "starlette>=0.40.0",
+    "reportlab>=4.0.0",
+]

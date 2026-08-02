@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-
 import arxiv
-
 
 async def arxiv_search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Search arXiv for papers matching `query`. Returns [{title, authors, url, abstract, published}]."""

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 
+from openai import AsyncAzureOpenAI
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from openai import AsyncAzureOpenAI
 
 # Importing config triggers dotenv loading so env vars are always available
 from .config import config as _cfg  # noqa: F401
@@ -18,7 +18,6 @@ def provider_info() -> tuple[str, str]:
 
 def is_configured(provider: str | None = None) -> bool:
     return bool(os.environ.get("AZURE_OPENAI_API_KEY") and os.environ.get("AZURE_OPENAI_ENDPOINT"))
-
 
 def get_model() -> OpenAIChatModel:
     """Return a pydantic-ai model for Azure OpenAI."""

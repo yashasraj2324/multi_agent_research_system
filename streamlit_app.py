@@ -20,19 +20,16 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
-import logfire
-
-logfire.configure()
-logfire.instrument_openai()
-logfire.instrument_httpx()
-logfire.instrument_pymongo()
-logfire.instrument_pydantic_ai()
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from research_system.observabilty.telemetry import setup_observability  # noqa: E402
 from research_system.core.config import config  # noqa: E402
+
+# Initialize OpenTelemetry + Logfire instrumentation once at application startup
+setup_observability()
 from research_system.utils.export import report_to_markdown, report_to_pdf_bytes  # noqa: E402
 from research_system.db.history import (  # noqa: E402
     delete_research,

@@ -1,10 +1,8 @@
 """Pydantic schemas exchanged between agents."""
 from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Literal
 from pydantic import BaseModel, Field
-
 
 class Subtask(BaseModel):
     """A single research subtask a subagent will investigate."""
