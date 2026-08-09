@@ -20,6 +20,7 @@ from .agents.citation import build_citation_agent
 from .agents.critique import build_critique_agent
 from .agents.planner import build_planner_agent
 from .agents.reviewer import build_reviewer_agent
+from .agents.router import build_router_agent
 from .agents.search import SearchDeps, build_search_agent
 from .agents.summarizer import build_summarizer_agent
 from .agents.outliner import build_outliner_agent
@@ -30,6 +31,7 @@ from .db.memory import MemoryStore
 from .core.schemas import (
     Critique,
     GapFollowup,
+    IntentCategory,
     LeadReview,
     ResearchPlan,
     ResearchReport,
@@ -414,3 +416,54 @@ class ResearchOrchestrator:
         critique = await self._critique(report, query)
 
         return plan, findings, report, critique
+
+    async def chat_turn(self, session_id: str, user_message: str) -> IntentCategory:
+        """Evaluates an incoming message and routes it based on intent."""
+        # 1. Update session / memory context
+        self.session_id = session_id
+        self.memory = MemoryStore(self.session_id)
+        
+        self._emit("Router", "start", f"Evaluating intent for message: {user_message!r}")
+
+        # 2. Fetch relevant context to inform the router.
+        original_query = self.memory.read("original_query")
+        original_query_text = original_query if original_query else "No prior query"
+        
+        # 3. Call Router Agent
+        router = build_router_agent()
+        prompt = (
+            f"Original Query: {original_query_text}\n"
+            f"User Message: {user_message}\n"
+        )
+        
+        try:
+            result = await router.run(prompt)
+            intent = result.output
+        except Exception as exc:  # noqa: BLE001
+            self._emit("Router", "error", f"Intent routing failed: {exc}", level="error")
+            # Default fallback
+            intent = IntentCategory(category="LOCAL_ANSWER", reasoning=f"Error during classification: {exc}")
+
+        self._emit(
+            "Router", 
+            "done", 
+            f"Intent classified as {intent.category} ({intent.reasoning})", 
+            level="success"
+        )
+        
+        # 4. Route based on intent.category
+        if intent.category == "LOCAL_ANSWER":
+            self._emit("Router", "route", "Handling as LOCAL_ANSWER (using local context)")
+            # In a full implementation, you would synthesize an answer from the local context.
+            pass
+        elif intent.category == "GAP_FILLER":
+            self._emit("Router", "route", "Handling as GAP_FILLER (spawning targeted subagents)")
+            # In a full implementation, parse the follow-up gap and run the search agent.
+            pass
+        elif intent.category == "FULL_RUN":
+            self._emit("Router", "route", "Handling as FULL_RUN (triggering full pipeline)")
+            # Execute the full pipeline for a brand new query
+            plan, findings, report, critique = await self.run(user_message)
+            self.memory.write("report", report.model_dump(mode="json"))
+            
+        return intent

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -21,6 +22,81 @@ from ..tools.search import TavilySearchTool
 class SearchDeps:
     tool: TavilySearchTool
     memory: MemoryStore
+
+
+SCRATCHPAD_STORE: dict[str, dict[str, Any]] = {}
+
+
+def _get_scratchpad_state(ctx: RunContext[Any]) -> tuple[dict[str, Any], Any | None]:
+    deps = getattr(ctx, "deps", None)
+    memory = getattr(deps, "memory", None) if deps is not None else None
+
+    if memory is not None and hasattr(memory, "read") and hasattr(memory, "write"):
+        raw_value = memory.read("scratchpad")
+        if raw_value is None:
+            state: dict[str, Any] = {}
+        elif isinstance(raw_value, dict):
+            state = raw_value
+        else:
+            try:
+                state = json.loads(raw_value)
+            except (TypeError, ValueError):
+                state = {}
+        return state, memory
+
+    session_key = getattr(getattr(deps, "memory", None), "session_id", None)
+    if session_key is None:
+        session_key = "default"
+
+    if str(session_key) not in SCRATCHPAD_STORE:
+        SCRATCHPAD_STORE[str(session_key)] = {}
+    return SCRATCHPAD_STORE[str(session_key)], None
+
+
+def register_shared_agent_tools(agent: Agent[Any, Any]) -> None:
+    @agent.tool
+    def scratchpad_read(ctx: RunContext[Any], sections: list[str]) -> str:
+        """Read one or more scratchpad sections and return the contents."""
+        state, _ = _get_scratchpad_state(ctx)
+        if not sections:
+            return json.dumps(state, default=str)
+
+        lines: list[str] = []
+        for section in sections:
+            value = state.get(section, "")
+            if isinstance(value, (dict, list)):
+                lines.append(f"{section}: {json.dumps(value, default=str)}")
+            else:
+                lines.append(f"{section}: {value}")
+        return "\n".join(lines)
+
+    @agent.tool
+    def scratchpad_write(ctx: RunContext[Any], section_name: str, content: str) -> str:
+        """Write content into a named scratchpad section."""
+        state, memory = _get_scratchpad_state(ctx)
+        state[section_name] = content
+        if memory is not None:
+            memory.write("scratchpad", state)
+        return f"Wrote content to scratchpad section '{section_name}'."
+
+    @agent.tool
+    def semantic_search_memory(ctx: RunContext[Any], query: str) -> str:
+        """Search the session's semantic memory for relevant content."""
+        deps = getattr(ctx, "deps", None)
+        memory = getattr(deps, "memory", None) if deps is not None else None
+        session_id = getattr(memory, "session_id", None) if memory is not None else None
+
+        try:
+            from ..db.vector import VectorStore
+
+            vector_store = VectorStore()
+            results = vector_store.similarity_search(query, k=3, session_id=session_id)
+        except Exception as exc:  # noqa: BLE001
+            return f"Semantic memory search unavailable: {exc}"
+
+        if not results:
+            return ""
+        return "\n".join(f"- {item.get('text', '')}" for item in results)
 
 
 STANDARD_SEARCH_PROMPT = """You are a SEARCH SUBAGENT in a multi-agent research team.
@@ -79,6 +155,8 @@ def build_search_agent(deep: bool = False) -> Agent[SearchDeps, SubagentFinding]
         retries=2,
     )
 
+    register_shared_agent_tools(agent)
+
     @agent.tool
     async def web_search(ctx: RunContext[SearchDeps], query: str) -> list[dict]:
         """Search the web for the given query. Returns list of {title, url, content}."""
@@ -112,4 +190,5 @@ def build_search_agent(deep: bool = False) -> Agent[SearchDeps, SubagentFinding]
         """List all keys currently in the shared research memory."""
         return ctx.deps.memory.keys()
 
+    agent._function_tools = agent._function_toolset.tools
     return agent

@@ -4,6 +4,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from ..core.llm import get_model
+from .search import register_shared_agent_tools
 
 
 SUMMARIZER_SYSTEM_PROMPT = """You are the SYNTHESIS agent.
@@ -18,9 +19,12 @@ You receive raw findings from multiple search subagents. Your job:
 
 
 def build_summarizer_agent() -> Agent[None, str]:
-    return Agent(
+    agent = Agent(
         get_model(),
         output_type=str,
         system_prompt=SUMMARIZER_SYSTEM_PROMPT,
         retries=1,
     )
+    register_shared_agent_tools(agent)
+    agent._function_tools = agent._function_toolset.tools
+    return agent

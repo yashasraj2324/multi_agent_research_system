@@ -25,4 +25,5 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "starlette>=0.40.0",
     "reportlab>=4.0.0",
+    "chromadb>=1.5.9",
 ]

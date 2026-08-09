@@ -23,10 +23,10 @@ class ResearchPlan(BaseModel):
 
 
 class SourceCitation(BaseModel):
-    """A single web source used by a subagent."""
-    title: str
-    url: str
-    snippet: str = ""
+    """Represents a source citation with identifying attributes."""
+    id: str = Field(description="Unique identifier for the source")
+    title: str = Field(description="Source title")
+    url: str = Field(description="URL linking to the source")
 
 
 class SubagentFinding(BaseModel):
@@ -122,3 +122,11 @@ class TraceEvent(BaseModel):
     stage: str
     message: str
     level: Literal["info", "success", "warn", "error"] = "info"
+
+
+class IntentCategory(BaseModel):
+    """Output of the Intent Router."""
+    category: Literal["LOCAL_ANSWER", "GAP_FILLER", "FULL_RUN"] = Field(
+        description="The classified intent of the user's message."
+    )
+    reasoning: str = Field(description="Why this category was chosen.")
