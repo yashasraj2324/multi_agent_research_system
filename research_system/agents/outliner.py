@@ -22,6 +22,8 @@ The outline should scale with the complexity of the findings.
 
 Rules:
 - Make the sections logically flow from introduction to conclusion/analysis.
+- Include a limitations, uncertainty, or open questions section whenever the
+  findings contain gaps, contradictions, or low-confidence evidence.
 - Ensure the focus areas are highly specific to guide the section writers.
 - Do not invent information; base the outline strictly on the synthesized brief."""
 

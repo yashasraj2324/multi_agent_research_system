@@ -13,23 +13,30 @@ pattern from the multi-agent research article.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
+
+from pydantic_ai import Agent
 
 from .agents.citation import build_citation_agent
 from .agents.critique import build_critique_agent
 from .agents.planner import build_planner_agent
 from .agents.reviewer import build_reviewer_agent
+from .agents.router import build_router_agent
 from .agents.search import SearchDeps, build_search_agent
 from .agents.summarizer import build_summarizer_agent
 from .agents.outliner import build_outliner_agent
 from .agents.section_writer import build_section_writer_agent
 from .agents.writer import build_writer_agent
 from .core.config import config
+from .core.llm import get_model
 from .db.memory import MemoryStore
 from .core.schemas import (
     Critique,
     GapFollowup,
+    IntentCategory,
     LeadReview,
     ResearchPlan,
     ResearchReport,
@@ -43,6 +50,34 @@ from .tools.search import TavilySearchTool
 
 
 TraceCallback = Callable[[TraceEvent], None]
+
+
+LOCAL_ANSWER_PROMPT = """You answer conversational follow-ups for a research session.
+
+Use only the supplied session context. If the context is insufficient, say what
+is missing and suggest a targeted follow-up search. Be concise but useful.
+Preserve citations/URLs from the context whenever they support the answer."""
+
+
+FOLLOWUP_ANSWER_PROMPT = """You answer a user's targeted research follow-up.
+
+Use the newly gathered finding plus prior session context. Separate what is
+known from what remains uncertain, cite URLs inline, and avoid inventing."""
+
+
+CONSOLIDATION_KEYWORDS = (
+    "consolidated report",
+    "consolidate report",
+    "consolidate the report",
+    "generate a report",
+    "generate report",
+    "create a report",
+    "make a report",
+    "final report",
+    "compile report",
+    "report from above",
+    "report based on",
+)
 
 
 class ResearchOrchestrator:
@@ -76,6 +111,241 @@ class ResearchOrchestrator:
             suggested_queries=gap.suggested_queries or [],
             scope="narrow",
         )
+
+    def _normalize_source_url(self, url: str) -> str:
+        if not url:
+            return ""
+        parts = urlsplit(url.strip())
+        path = parts.path.rstrip("/") or parts.path
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+    def _dedupe_sources(self, findings: list[SubagentFinding]) -> list[SourceCitation]:
+        seen: dict[str, SourceCitation] = {}
+        for f in findings:
+            for s in f.sources:
+                key = self._normalize_source_url(s.url)
+                if key and key not in seen:
+                    seen[key] = s
+        return list(seen.values())
+
+    def _context_snapshot(self, max_chars: int = 14000) -> str:
+        keys = self.memory.keys()
+        preferred = [
+            "original_query",
+            "mode",
+            "plan",
+            "synthesis_brief",
+            "report",
+            "critique",
+            "last_followup_finding",
+        ]
+        finding_keys = [k for k in keys if k.startswith("finding.")]
+        ordered = [k for k in preferred if k in keys] + finding_keys
+
+        parts: list[str] = []
+        for key in ordered:
+            value = self.memory.read(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                rendered = value
+            else:
+                rendered = json.dumps(value, default=str, ensure_ascii=False)
+            parts.append(f"## {key}\n{rendered}")
+            if sum(len(p) for p in parts) >= max_chars:
+                break
+        return "\n\n".join(parts)[:max_chars]
+
+    def _looks_like_consolidation_request(self, user_message: str) -> bool:
+        lowered = user_message.lower()
+        return any(keyword in lowered for keyword in CONSOLIDATION_KEYWORDS)
+
+    def _load_findings_from_memory(self) -> list[SubagentFinding]:
+        findings: list[SubagentFinding] = []
+        seen_ids: set[str] = set()
+
+        raw_findings = self.memory.read("findings")
+        if isinstance(raw_findings, list):
+            for raw in raw_findings:
+                try:
+                    finding = SubagentFinding.model_validate(raw)
+                except Exception:  # noqa: BLE001
+                    continue
+                findings.append(finding)
+                seen_ids.add(finding.subtask_id)
+
+        for key in self.memory.keys():
+            if not key.startswith("finding."):
+                continue
+            raw = self.memory.read(key)
+            if not raw:
+                continue
+            try:
+                finding = SubagentFinding.model_validate(raw)
+            except Exception:  # noqa: BLE001
+                continue
+            if finding.subtask_id not in seen_ids:
+                findings.append(finding)
+                seen_ids.add(finding.subtask_id)
+        return findings
+
+    async def _answer_from_context(self, user_message: str) -> str:
+        self._emit("Context", "read", "Building answer from saved session context")
+        context = self._context_snapshot()
+        if not context.strip():
+            return (
+                "I do not have enough saved research context in this session yet. "
+                "Ask a full research question first, or turn this into a targeted follow-up search."
+            )
+
+        agent: Agent[None, str] = Agent(
+            get_model(),
+            output_type=str,
+            system_prompt=LOCAL_ANSWER_PROMPT,
+            retries=1,
+        )
+        result = await agent.run(
+            f"User message:\n{user_message}\n\nSession context:\n{context}\n\nAnswer now."
+        )
+        return result.output
+
+    async def _answer_gap_followup(self, user_message: str) -> str:
+        self._emit("FollowUp", "start", "Running targeted research for the follow-up")
+        tool = TavilySearchTool()
+        subtask = Subtask(
+            id=f"gap-{uuid.uuid4().hex[:6]}",
+            objective=user_message,
+            output_format="Concise answer with source-backed bullets, uncertainty, and next questions.",
+            suggested_queries=[user_message],
+            scope="narrow",
+        )
+        finding = await self._run_subagent(subtask, tool)
+        self.memory.write("last_followup_finding", finding.model_dump(mode="json"))
+
+        existing_findings = []
+        for key in self.memory.keys():
+            if key.startswith("finding."):
+                raw = self.memory.read(key)
+                if raw:
+                    existing_findings.append(SubagentFinding.model_validate(raw))
+        all_sources = self._dedupe_sources(existing_findings)
+        self.memory.write("all_sources", [s.model_dump(mode="json") for s in all_sources])
+
+        context = self._context_snapshot()
+        agent: Agent[None, str] = Agent(
+            get_model(),
+            output_type=str,
+            system_prompt=FOLLOWUP_ANSWER_PROMPT,
+            retries=1,
+        )
+        result = await agent.run(
+            f"User follow-up:\n{user_message}\n\n"
+            f"New finding:\n{finding.model_dump_json()}\n\n"
+            f"Prior session context:\n{context}\n\n"
+            "Answer the follow-up directly."
+        )
+        return result.output
+
+    async def _consolidate_report(self, user_message: str) -> str:
+        self._emit("Compiler", "start", "Generating consolidated report from session context")
+        query = self.memory.read("original_query") or user_message
+        findings = self._load_findings_from_memory()
+        if not findings:
+            existing_report = self.memory.read("report")
+            if existing_report:
+                report = ResearchReport.model_validate(existing_report)
+                return (
+                    f"I found an existing report, **{report.title}**, but no separate findings to consolidate. "
+                    "Open the **Export** tab to download it."
+                )
+            return (
+                "I do not have saved research findings to consolidate yet. "
+                "Run the initial research first, then ask for the consolidated report."
+            )
+
+        plan_raw = self.memory.read("plan")
+        try:
+            plan = ResearchPlan.model_validate(plan_raw) if plan_raw else ResearchPlan(
+                original_query=query,
+                interpretation=query,
+                approach="Consolidate saved research and follow-up findings into a final report.",
+                complexity="moderate",
+                subtasks=[],
+            )
+        except Exception:  # noqa: BLE001
+            plan = ResearchPlan(
+                original_query=query,
+                interpretation=query,
+                approach="Consolidate saved research and follow-up findings into a final report.",
+                complexity="moderate",
+                subtasks=[],
+            )
+
+        all_sources = self._dedupe_sources(findings)
+        brief = await self._synthesize(query, plan, findings)
+        consolidation_brief = (
+            f"{brief}\n\n"
+            f"User consolidation instruction: {user_message}\n\n"
+            "The final report must integrate the original research and every follow-up finding. "
+            "Do not explain how to write a report; write the consolidated report itself."
+        )
+        self.memory.write("synthesis_brief", consolidation_brief)
+        self.memory.write("all_sources", [s.model_dump(mode="json") for s in all_sources])
+
+        report = await self._write(query, consolidation_brief, all_sources)
+        if self.deep:
+            report = await self._audit_citations(report)
+        critique = await self._critique(report, query)
+        if critique:
+            report.quality_notes = [
+                *critique.weaknesses[:3],
+                *[f"Missing angle: {angle}" for angle in critique.missing_angles[:2]],
+            ][:5]
+            self.memory.write("critique", critique.model_dump(mode="json"))
+
+        self.memory.write("findings", [f.model_dump(mode="json") for f in findings])
+        self.memory.write("report", report.model_dump(mode="json"))
+        self._index_research_memory(query, findings, report)
+        return (
+            f"Generated consolidated report **{report.title}** with "
+            f"{len(report.sections)} sections and {len(report.all_sources)} unique sources."
+            + (f" Critique score: {critique.overall_score}/10." if critique else "")
+            + "\n\nOpen the **Export** tab for Markdown/PDF."
+        )
+
+    def _index_research_memory(
+        self,
+        query: str,
+        findings: list[SubagentFinding],
+        report: ResearchReport | None = None,
+    ) -> None:
+        chunks: list[str] = [f"Original query: {query}"]
+        for finding in findings:
+            source_urls = ", ".join(s.url for s in finding.sources if s.url)
+            chunks.append(
+                f"Finding {finding.subtask_id}: {finding.objective}\n"
+                f"Confidence: {finding.confidence}\n"
+                f"Key findings:\n- " + "\n- ".join(finding.key_findings) + "\n"
+                f"Gaps: {finding.gaps}\nSources: {source_urls}"
+            )
+        if report:
+            chunks.append(
+                f"Report: {report.title}\n"
+                f"Executive summary: {report.executive_summary}\n"
+                f"Quality notes: {'; '.join(report.quality_notes)}"
+            )
+
+        try:
+            from .db.vector import VectorStore
+
+            VectorStore().add_chunks(
+                self.session_id,
+                chunks,
+                {"kind": "research_context", "query": query},
+            )
+            self._emit("Memory", "index", f"Indexed {len(chunks)} context chunks")
+        except Exception as exc:  # noqa: BLE001
+            self._emit("Memory", "index", f"Semantic index skipped: {exc}", level="warn")
 
     # ---------- individual stages ----------
 
@@ -395,15 +665,12 @@ class ResearchOrchestrator:
                 plan.subtasks.extend(followup_subtasks)
 
         # 4. Deduplicate sources
-        seen: dict[str, SourceCitation] = {}
-        for f in findings:
-            for s in f.sources:
-                if s.url and s.url not in seen:
-                    seen[s.url] = s
-        all_sources = list(seen.values())
+        all_sources = self._dedupe_sources(findings)
+        self.memory.write("all_sources", [s.model_dump(mode="json") for s in all_sources])
 
         # 5. Synthesize + write
         brief = await self._synthesize(query, plan, findings)
+        self.memory.write("synthesis_brief", brief)
         report = await self._write(query, brief, all_sources)
 
         # 6. Deep mode: citation audit
@@ -412,5 +679,81 @@ class ResearchOrchestrator:
 
         # 7. Critique pass (always) — honest quality signal
         critique = await self._critique(report, query)
+        if critique:
+            report.quality_notes = [
+                *critique.weaknesses[:3],
+                *[f"Missing angle: {angle}" for angle in critique.missing_angles[:2]],
+            ][:5]
+            self.memory.write("critique", critique.model_dump(mode="json"))
+        self.memory.write("findings", [f.model_dump(mode="json") for f in findings])
+        self.memory.write("report", report.model_dump(mode="json"))
+        self._index_research_memory(query, findings, report)
 
         return plan, findings, report, critique
+
+    async def chat_turn(self, session_id: str, user_message: str) -> IntentCategory:
+        """Evaluates an incoming message and routes it based on intent."""
+        # 1. Update session / memory context
+        self.session_id = session_id
+        self.memory = MemoryStore(self.session_id)
+        
+        self._emit("Router", "start", f"Evaluating intent for message: {user_message!r}")
+
+        # 2. Fetch relevant context to inform the router.
+        original_query = self.memory.read("original_query")
+        original_query_text = original_query if original_query else "No prior query"
+        
+        # 3. Call Router Agent
+        router = build_router_agent()
+        prompt = (
+            f"Original Query: {original_query_text}\n"
+            f"User Message: {user_message}\n"
+        )
+        
+        try:
+            result = await router.run(prompt)
+            intent = result.output
+        except Exception as exc:  # noqa: BLE001
+            self._emit("Router", "error", f"Intent routing failed: {exc}", level="error")
+            # Default fallback
+            intent = IntentCategory(category="LOCAL_ANSWER", reasoning=f"Error during classification: {exc}")
+
+        if self._looks_like_consolidation_request(user_message) and self._load_findings_from_memory():
+            intent = IntentCategory(
+                category="CONSOLIDATE_REPORT",
+                reasoning="User asked to generate a consolidated report from existing session research.",
+            )
+
+        self._emit(
+            "Router", 
+            "done", 
+            f"Intent classified as {intent.category} ({intent.reasoning})", 
+            level="success"
+        )
+        
+        # 4. Route based on intent.category
+        if intent.category == "LOCAL_ANSWER":
+            self._emit("Router", "route", "Handling as LOCAL_ANSWER (using local context)")
+            intent.response = await self._answer_from_context(user_message)
+            self.memory.write("last_response", intent.response)
+        elif intent.category == "GAP_FILLER":
+            self._emit("Router", "route", "Handling as GAP_FILLER (spawning targeted subagents)")
+            intent.response = await self._answer_gap_followup(user_message)
+            self.memory.write("last_response", intent.response)
+        elif intent.category == "CONSOLIDATE_REPORT":
+            self._emit("Router", "route", "Handling as CONSOLIDATE_REPORT (compiling saved findings)")
+            intent.response = await self._consolidate_report(user_message)
+            self.memory.write("last_response", intent.response)
+        elif intent.category == "FULL_RUN":
+            self._emit("Router", "route", "Handling as FULL_RUN (triggering full pipeline)")
+            # Execute the full pipeline for a brand new query
+            plan, findings, report, critique = await self.run(user_message)
+            intent.response = (
+                f"Generated **{report.title}** with {len(report.sections)} sections, "
+                f"{len(report.all_sources)} unique sources"
+                + (f", and a critique score of {critique.overall_score}/10." if critique else ".")
+                + "\n\nOpen the **Export** tab for Markdown/PDF, or ask a follow-up question."
+            )
+            self.memory.write("last_response", intent.response)
+            
+        return intent

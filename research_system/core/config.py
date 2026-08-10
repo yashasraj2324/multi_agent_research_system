@@ -13,7 +13,9 @@ class Config:
     AZURE_OPENAI_API_KEY: str = os.environ.get("AZURE_OPENAI_API_KEY", "")
     AZURE_OPENAI_ENDPOINT: str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
     LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "azure").lower()
-
+    CHROMA_API_KEY:str = os.environ.get("CHROMA_API_KEY")
+    CHROMA_TENANT:str = os.environ.get("CHROMA_TENANT")
+    CHROMA_DATABASE:str = os.environ.get("CHROMA_DATABASE", "default")
     # ---- Models ----
     AZURE_OPENAI_DEPLOYMENT_NAME: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT") or os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
     AZURE_OPENAI_API_VERSION: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
@@ -49,6 +51,8 @@ class Config:
     @classmethod
     def is_tavily_configured(cls) -> bool:
         return bool(cls.TAVILY_API_KEY)
-
+    @classmethod
+    def is_chromadb_configured(cls)-> bool:
+        return bool(cls.CHROMA_API_KEY)
 
 config = Config()
