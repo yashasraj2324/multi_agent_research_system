@@ -24,7 +24,6 @@ from research_system.core.config import config  # noqa: E402
 # Initialize OpenTelemetry + Logfire instrumentation once at application startup
 setup_observability()
 from research_system.utils.export import report_to_markdown, report_to_pdf_bytes  # noqa: E402
-from research_system.db.history import delete_research  # noqa: E402
 from research_system.db.memory import SessionManager, MemoryStore  # noqa: E402
 from research_system.orchestrator import ResearchOrchestrator  # noqa: E402
 from research_system.core.schemas import (  # noqa: E402
@@ -218,8 +217,12 @@ def _agent_class(agent: str) -> str:
     if a.startswith("plan"): return "planner"
     if a.startswith("search") or a.startswith("gapfiller"): return "search"
     if a.startswith("leadreview"): return "planner"
+    if a.startswith("followup"): return "search"
+    if a.startswith("outliner"): return "planner"
+    if a.startswith("sectionwriter") or a.startswith("compiler"): return "writer"
     if a.startswith("citation"): return "citation"
     if a.startswith("memory"): return "memory"
+    if a.startswith("context"): return "memory"
     if a.startswith("summar"): return "summarizer"
     if a.startswith("write"): return "writer"
     if a.startswith("router"): return "memory"
@@ -241,7 +244,7 @@ def _agent_badge(agent: str, level: str) -> str:
     return f'<span class="agent-badge {cls}">{label}</span>'
 
 import re as _re  # noqa: E402
-_SUBTASK_RE = _re.compile(r"\[(st\d+|gap\d+)\]")
+_SUBTASK_RE = _re.compile(r"\[((?:st|gap)[\w-]*)\]")
 
 def _extract_subtask_id(message: str) -> str | None:
     m = _SUBTASK_RE.search(message or "")
@@ -386,7 +389,11 @@ with col_chat:
                 # Save trace to memory store
                 mem_store.write("trace", st.session_state.trace)
                 
-                msg_content = f"Handled as **{intent_cat}**.\n\nReasoning: {intent['reasoning']}\n\nCheck the **Scratchpad & Memory** tab for any updates!"
+                msg_content = intent.get("response") or (
+                    f"Handled as **{intent_cat}**.\n\n"
+                    f"Reasoning: {intent['reasoning']}\n\n"
+                    "Check the **Scratchpad & Memory** tab for any updates."
+                )
                 session_manager.append_message(st.session_state.session_id, "assistant", msg_content)
                 st.session_state.running = False
                 st.rerun()
@@ -453,7 +460,8 @@ with col_memory:
             report_obj = ResearchReport.model_validate(report_data)
             st.markdown(f"#### {report_obj.title}")
             
-            md = report_to_markdown(st.session_state.session_id, report_obj)
+            original_query = mem_store.read("original_query") or st.session_state.session_id
+            md = report_to_markdown(original_query, report_obj)
             safe_stem = (report_obj.title[:60].replace(" ", "_") or "research_report")
             
             st.download_button(
@@ -464,7 +472,7 @@ with col_memory:
                 use_container_width=True,
             )
             try:
-                pdf_bytes = report_to_pdf_bytes(st.session_state.session_id, report_obj)
+                pdf_bytes = report_to_pdf_bytes(original_query, report_obj)
                 st.download_button(
                     "⬇ Download PDF (.pdf)",
                     data=pdf_bytes,

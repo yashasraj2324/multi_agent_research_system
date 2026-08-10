@@ -27,6 +27,9 @@ class SourceCitation(BaseModel):
     id: str = Field(description="Unique identifier for the source")
     title: str = Field(description="Source title")
     url: str = Field(description="URL linking to the source")
+    snippet: str = Field(default="", description="Short source excerpt or search-result context.")
+    published_date: str = Field(default="", description="Publication or update date when known.")
+    source_type: Literal["primary", "academic", "official", "news", "analysis", "unknown"] = "unknown"
 
 
 class SubagentFinding(BaseModel):
@@ -82,6 +85,10 @@ class ResearchReport(BaseModel):
     executive_summary: str
     sections: list[ReportSection]
     all_sources: list[SourceCitation]
+    quality_notes: list[str] = Field(
+        default_factory=list,
+        description="Brief caveats about source coverage, uncertainty, or follow-up needs.",
+    )
 
 
 class CitationAudit(BaseModel):
@@ -126,7 +133,11 @@ class TraceEvent(BaseModel):
 
 class IntentCategory(BaseModel):
     """Output of the Intent Router."""
-    category: Literal["LOCAL_ANSWER", "GAP_FILLER", "FULL_RUN"] = Field(
+    category: Literal["LOCAL_ANSWER", "GAP_FILLER", "CONSOLIDATE_REPORT", "FULL_RUN"] = Field(
         description="The classified intent of the user's message."
     )
     reasoning: str = Field(description="Why this category was chosen.")
+    response: str = Field(
+        default="",
+        description="Assistant response generated after routing; empty until the orchestrator fills it.",
+    )

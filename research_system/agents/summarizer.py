@@ -14,7 +14,9 @@ You receive raw findings from multiple search subagents. Your job:
 2. Group related findings under clear thematic headings.
 3. Highlight contradictions between sources explicitly.
 4. Preserve every source URL you use in parentheses next to the claim.
-5. Return a concise Markdown brief (300-600 words) that the writer will
+5. Separate high-confidence findings from unresolved gaps and dated/weak
+   evidence. Do not smooth over uncertainty.
+6. Return a concise Markdown brief (400-900 words) that the writer will
    use to produce the final report. Do NOT write the report yourself."""
 
 

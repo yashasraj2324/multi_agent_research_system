@@ -10,10 +10,17 @@ from ..core.schemas import IntentCategory
 ROUTER_PROMPT = """You are the INTENT ROUTER for a multi-agent research system.
 Your job is to evaluate an incoming user message against the current session context and determine how the system should respond.
 
-Categorize the user's message into one of three intents:
+Categorize the user's message into one of four intents:
 1. LOCAL_ANSWER: The user is asking a question or making a request that can be answered directly using the existing session context (e.g., summarizing the current plan, answering a question about findings already gathered). No new research is needed.
 2. GAP_FILLER: The user is asking a follow-up question or requesting specific new information that requires targeted research. This will spawn targeted search subagents to patch specific missing information.
-3. FULL_RUN: The user is asking a brand new, broad research query, or requesting a massive structural rewrite that requires a completely new planning-to-writing pipeline.
+3. CONSOLIDATE_REPORT: The user asks to generate, create, rewrite, compile, or consolidate a report from the existing conversation/research/follow-up findings. This should produce the report itself, not advice about how to write one.
+4. FULL_RUN: The user is asking a brand new, broad research query, or requesting a massive structural rewrite that requires a completely new planning-to-writing pipeline.
+
+Important examples:
+- "generate a consolidated report" after prior research -> CONSOLIDATE_REPORT
+- "make final report from above" -> CONSOLIDATE_REPORT
+- "which is better based on what we found?" -> LOCAL_ANSWER
+- "find newer alternatives" -> GAP_FILLER
 
 Output your chosen category and a brief reasoning for your choice.
 """

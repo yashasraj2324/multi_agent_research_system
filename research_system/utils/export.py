@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import io
 import re
+from html import escape
 
 from reportlab.lib.pagesizes import LETTER
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
@@ -13,32 +14,41 @@ from ..core.schemas import ResearchReport
 
 
 def report_to_markdown(query: str, report: ResearchReport) -> str:
-    lines: list[str] = []
-    lines.append(f"# {report.title}\n")
-    lines.append(f"_Original query: {query}_\n")
-    lines.append("## Executive summary\n")
-    lines.append(report.executive_summary.strip() + "\n")
+    lines: list[str] = [
+        f"# {report.title}\n",
+        f"_Original query: {query}_\n",
+        "## Executive summary\n",
+        report.executive_summary.strip() + "\n",
+    ]
     for sec in report.sections:
         lines.append(f"## {sec.heading}\n")
         lines.append(sec.body_markdown.strip() + "\n")
+
+    if report.quality_notes:
+        lines.append("## Quality notes\n")
+        for note in report.quality_notes:
+            lines.append(f"- {note}")
+        lines.append("")
+
     if report.all_sources:
         lines.append("## Sources\n")
-        for i, s in enumerate(report.all_sources, start=1):
-            title = s.title or s.url
-            lines.append(f"[{i}] [{title}]({s.url})")
+        for i, source in enumerate(report.all_sources, start=1):
+            title = source.title or source.url
+            lines.append(f"[{i}] [{title}]({source.url})")
     return "\n".join(lines)
 
 
 def _inline_md(text: str) -> str:
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
-    text = re.sub(r"`(.+?)`", r'<font face="Courier">\1</font>', text)
-    text = re.sub(
+    escaped = escape(text, quote=True)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"\*(.+?)\*", r"<i>\1</i>", escaped)
+    escaped = re.sub(r"`(.+?)`", r'<font face="Courier">\1</font>', escaped)
+    escaped = re.sub(
         r"\[(.+?)\]\((.+?)\)",
         r'<link href="\2" color="blue"><u>\1</u></link>',
-        text,
+        escaped,
     )
-    return text
+    return escaped
 
 
 def _md_to_paragraphs(text: str, style: ParagraphStyle) -> list[Paragraph]:
@@ -51,7 +61,7 @@ def _md_to_paragraphs(text: str, style: ParagraphStyle) -> list[Paragraph]:
         if all(line.lstrip().startswith(("- ", "* ")) for line in block.splitlines()):
             for line in block.splitlines():
                 item = line.lstrip()[2:]
-                paragraphs.append(Paragraph(f"• {_inline_md(item)}", style))
+                paragraphs.append(Paragraph(f"&bull; {_inline_md(item)}", style))
             continue
         paragraphs.append(Paragraph(_inline_md(block.replace("\n", "<br/>")), style))
     return paragraphs
@@ -81,19 +91,27 @@ def report_to_pdf_bytes(query: str, report: ResearchReport) -> bytes:
         Paragraph("Executive summary", h2),
     ]
     story.extend(_md_to_paragraphs(report.executive_summary, body))
+
     for sec in report.sections:
         story.append(Spacer(1, 6))
         story.append(Paragraph(_inline_md(sec.heading), h2))
         story.extend(_md_to_paragraphs(sec.body_markdown, body))
 
+    if report.quality_notes:
+        story.append(Spacer(1, 12))
+        story.append(Paragraph("Quality notes", h2))
+        for note in report.quality_notes:
+            story.append(Paragraph(f"&bull; {_inline_md(note)}", body))
+
     if report.all_sources:
         story.append(Spacer(1, 12))
         story.append(Paragraph("Sources", h2))
-        for i, s in enumerate(report.all_sources, start=1):
-            title = s.title or s.url
+        for i, source in enumerate(report.all_sources, start=1):
+            title = source.title or source.url
             story.append(
                 Paragraph(
-                    f'[{i}] <link href="{s.url}" color="blue"><u>{_inline_md(title)}</u></link>',
+                    f'[{i}] <link href="{escape(source.url, quote=True)}" '
+                    f'color="blue"><u>{_inline_md(title)}</u></link>',
                     body,
                 )
             )

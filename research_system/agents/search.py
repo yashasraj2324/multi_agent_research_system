@@ -13,6 +13,7 @@ from pydantic_ai import Agent, RunContext
 
 from ..core.llm import get_model
 from ..db.memory import MemoryStore
+from ..db.scratchpad import ResearchScratchpad
 from ..core.schemas import SubagentFinding
 from ..tools.arxiv import arxiv_search
 from ..tools.search import TavilySearchTool
@@ -24,32 +25,22 @@ class SearchDeps:
     memory: MemoryStore
 
 
-SCRATCHPAD_STORE: dict[str, dict[str, Any]] = {}
+SCRATCHPAD_STORE: dict[str, ResearchScratchpad] = {}
 
 
-def _get_scratchpad_state(ctx: RunContext[Any]) -> tuple[dict[str, Any], Any | None]:
+def _get_scratchpad_state(ctx: RunContext[Any]) -> tuple[ResearchScratchpad, Any | None]:
     deps = getattr(ctx, "deps", None)
     memory = getattr(deps, "memory", None) if deps is not None else None
 
     if memory is not None and hasattr(memory, "read") and hasattr(memory, "write"):
-        raw_value = memory.read("scratchpad")
-        if raw_value is None:
-            state: dict[str, Any] = {}
-        elif isinstance(raw_value, dict):
-            state = raw_value
-        else:
-            try:
-                state = json.loads(raw_value)
-            except (TypeError, ValueError):
-                state = {}
-        return state, memory
+        return ResearchScratchpad.from_memory(memory), memory
 
     session_key = getattr(getattr(deps, "memory", None), "session_id", None)
     if session_key is None:
         session_key = "default"
 
     if str(session_key) not in SCRATCHPAD_STORE:
-        SCRATCHPAD_STORE[str(session_key)] = {}
+        SCRATCHPAD_STORE[str(session_key)] = ResearchScratchpad()
     return SCRATCHPAD_STORE[str(session_key)], None
 
 
@@ -59,11 +50,11 @@ def register_shared_agent_tools(agent: Agent[Any, Any]) -> None:
         """Read one or more scratchpad sections and return the contents."""
         state, _ = _get_scratchpad_state(ctx)
         if not sections:
-            return json.dumps(state, default=str)
+            return state.to_prompt_context()
 
         lines: list[str] = []
         for section in sections:
-            value = state.get(section, "")
+            value = state.read_section(section)
             if isinstance(value, (dict, list)):
                 lines.append(f"{section}: {json.dumps(value, default=str)}")
             else:
@@ -74,9 +65,9 @@ def register_shared_agent_tools(agent: Agent[Any, Any]) -> None:
     def scratchpad_write(ctx: RunContext[Any], section_name: str, content: str) -> str:
         """Write content into a named scratchpad section."""
         state, memory = _get_scratchpad_state(ctx)
-        state[section_name] = content
+        state.write_section(section_name, content)
         if memory is not None:
-            memory.write("scratchpad", state)
+            state.write_to_memory(memory)
         return f"Wrote content to scratchpad section '{section_name}'."
 
     @agent.tool
@@ -110,12 +101,15 @@ You have ONE subtask. Your goal:
 2. Extract concrete, source-backed facts. Never invent information.
 3. Prefer authoritative sources (official docs, primary sources, peer-
    reviewed papers) over SEO-optimised content farms.
+   For current facts, search for publication/update dates and prefer recent
+   primary or reputable news sources.
 4. If you need the ORIGINAL user question or the LEAD's plan for context,
    call `memory_read("original_query")` or `memory_read("plan")`.
 5. Return a SubagentFinding with:
    - key_findings: 3-8 self-contained bullet points; each ends with a
      source reference like "(source: <url>)".
-   - sources: every URL you actually used, with title + short snippet.
+   - sources: every URL you actually used, with title, snippet when
+     available, publication date when known, and a source_type.
    - confidence: how confident you are in the findings.
    - gaps: information you tried to find but couldn't.
 6. Stop searching once you have enough. Do not loop forever."""
@@ -133,13 +127,17 @@ Your goal:
      topic is scientific / technical / research-heavy.
 2. Cross-reference: prefer facts confirmed by at least two independent
    authoritative sources. Peer-reviewed papers > blog posts > content farms.
+   Identify primary evidence, conflicting evidence, dates, and stale-source
+   risk. Do not treat search-result snippets as definitive when the claim
+   needs a primary source.
 3. If you need the ORIGINAL user question or the LEAD's plan for context,
    call `memory_read("original_query")` or `memory_read("plan")`. You can
    also list what's available with `memory_keys()`.
 4. Return a SubagentFinding with:
    - key_findings: 5-12 self-contained bullet points; each ends with a
      source reference like "(source: <url>)".
-   - sources: every URL you actually used, with title + short snippet.
+   - sources: every URL you actually used, with title, snippet when
+     available, publication date when known, and a source_type.
    - confidence: honest self-assessment.
    - gaps: information you tried to find but couldn't — be specific.
 5. Never invent information or URLs.
