@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from research_system.observabilty.telemetry import setup_observability  # noqa: E402
+from research_system.observability.telemetry import setup_observability  # noqa: E402
 from research_system.core.config import config  # noqa: E402
 
 # Initialize OpenTelemetry + Logfire instrumentation once at application startup

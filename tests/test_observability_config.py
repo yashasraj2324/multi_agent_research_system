@@ -1,4 +1,4 @@
-from research_system.observabilty.config import ObservabilityConfig
+from research_system.observability.config import ObservabilityConfig
 
 
 def test_logfire_is_off_by_default(monkeypatch):
