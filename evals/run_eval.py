@@ -470,10 +470,18 @@ def build_summary(runs: list[dict], requested: int) -> dict:
     return summary
 
 
+def split_resumed(prior_runs: list[dict], queries: list[str]) -> tuple[dict[str, dict], list[str]]:
+    """From an earlier results file: successful runs to keep (by query) and queries still to run."""
+    kept = {r["query"]: r for r in prior_runs if not r.get("error") and r["query"] in queries}
+    return kept, [q for q in queries if q not in kept]
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("-n", type=int, default=10, help="number of queries to run (default 10)")
     p.add_argument("--queries", type=Path, default=QUERIES_PATH)
+    p.add_argument("--resume", type=Path, default=None,
+                   help="earlier results file: keep its successful runs, rerun only the failed/missing queries")
     p.add_argument("--deep", action="store_true", help="run in Deep Research mode")
     p.add_argument("--timeout", type=float, default=900.0, help="per-run timeout in seconds")
     p.add_argument("--price-in", type=float, default=None, help="USD per 1M input tokens")
@@ -496,11 +504,17 @@ async def main_async(args) -> int:
 
     from research_system.core.config import config
 
-    runs = []
-    for i, query in enumerate(queries, 1):
-        print(f"[{i}/{len(queries)}] {query}", flush=True)
+    kept: dict[str, dict] = {}
+    todo = queries
+    if args.resume:
+        kept, todo = split_resumed(json.loads(args.resume.read_text(encoding="utf-8"))["runs"], queries)
+        print(f"Resuming from {args.resume.name}: keeping {len(kept)} successful run(s), rerunning {len(todo)}", flush=True)
+
+    fresh: dict[str, dict] = {}
+    for i, query in enumerate(todo, 1):
+        print(f"[{i}/{len(todo)}] {query}", flush=True)
         rec = await run_one(query, args)
-        runs.append(rec)
+        fresh[query] = rec
         status = f"ERROR {rec['error']}" if rec["error"] else (
             f"{rec['runtime_s']}s, critique={rec['critique_score']}, "
             f"cited={rec['sources_cited']}, resolve={rec['url_resolve_share']} (n={rec['resolve_n']}, "
@@ -509,6 +523,7 @@ async def main_async(args) -> int:
         )
         print(f"    -> {status}", flush=True)
 
+    runs = [kept.get(q) or fresh[q] for q in queries]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = {
         "timestamp": stamp,
@@ -519,6 +534,8 @@ async def main_async(args) -> int:
             "keyword_threshold": KEYWORD_THRESHOLD,
             "price_in_per_1m": args.price_in,
             "price_out_per_1m": args.price_out,
+            "resumed_from": args.resume.name if args.resume else None,
+            "runs_kept_from_resumed_file": len(kept),
         },
         "summary": build_summary(runs, len(queries)),
         "runs": runs,

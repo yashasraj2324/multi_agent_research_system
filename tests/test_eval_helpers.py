@@ -228,3 +228,13 @@ def test_summary_pools_resolve_and_grounded_counts():
     assert s["pooled_resolve"] == {"numerator": 4, "denominator": 8, "share": 0.5}
     assert s["pooled_grounded"] == {"numerator": 3, "denominator": 4, "share": 0.75}
     assert s["pooled_unverified_urls"] == 2 and s["search_errors"] == 1
+
+
+def test_split_resumed_keeps_only_successful_runs_in_scope():
+    prior = [
+        {"query": "a", "error": None},
+        {"query": "b", "error": "ModelAPIError: Connection error."},
+        {"query": "z", "error": None},  # not among the requested queries
+    ]
+    kept, todo = run_eval.split_resumed(prior, ["a", "b", "c"])
+    assert list(kept) == ["a"] and todo == ["b", "c"]
