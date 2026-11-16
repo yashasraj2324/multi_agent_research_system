@@ -23,10 +23,12 @@ class ObservabilityConfig(BaseSettings):
     )
 
     send_to_logfire: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Set to True to automatically authenticate and stream telemetry directly "
-            "to Logfire Cloud without needing a running Docker collector."
+            "Off by default so the app starts with no Logfire setup (Logfire otherwise "
+            "prompts for a login, which fails without a terminal, e.g. in Docker). Set "
+            "SEND_TO_LOGFIRE=true together with LOGFIRE_TOKEN to stream telemetry to "
+            "Logfire Cloud."
         ),
     )
 

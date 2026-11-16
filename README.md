@@ -56,12 +56,13 @@ Requirements: Python 3.10-3.13 (`.python-version` pins 3.11) and [uv](https://do
    MAX_SEARCH_RESULTS_PER_AGENT="5"
 
    # Optional: observability (Logfire / OpenTelemetry; defaults in research_system/observabilty/config.py)
-   SEND_TO_LOGFIRE="false"            # default is true; see note below
+   SEND_TO_LOGFIRE="false"            # default false: no Logfire setup needed. true needs LOGFIRE_TOKEN
+   LOGFIRE_TOKEN=""                   # only used when SEND_TO_LOGFIRE=true
    CONSOLE_ENABLED="true"
    OTLP_ENDPOINT=""                   # custom OTel collector, e.g. http://localhost:4318
    SERVICE_NAME="multi-agent-research"
    ```
-   **Set `SEND_TO_LOGFIRE=false` unless you have Logfire credentials** (`uv run logfire auth` or `LOGFIRE_TOKEN`). With the default and no credentials, Logfire asks for a login interactively at startup, which fails in non-interactive runs such as Docker.
+   Logfire is **off by default**, so the app starts with no Logfire account or terminal (including in Docker). To send traces to Logfire Cloud, set `SEND_TO_LOGFIRE=true` and provide `LOGFIRE_TOKEN` (or run `uv run logfire auth` locally).
 
    `LLM_PROVIDER`, `LEAD_MODEL` and `HISTORY_DB_PATH` are read in `config.py`, but only Azure OpenAI is implemented and the other two are not used elsewhere in the code.
 
@@ -77,7 +78,7 @@ Run with Docker (the image is built from `dockerfile`; `.env` files are excluded
 docker build -t deep-research -f dockerfile .
 docker run --rm -p 3000:3000 --env-file research_system/.env deep-research
 ```
-`--env-file` does not strip quotes, so in the file you pass to Docker write values without quotation marks (e.g. `SEND_TO_LOGFIRE=false`). Then open http://localhost:3000. Inside a container `localhost:27017` is not your host's MongoDB, so session memory uses the in-process fallback unless you set `MONGO_URL`.
+`--env-file` does not strip quotes, so in the file you pass to Docker write values without quotation marks (e.g. `TAVILY_API_KEY=abc`). Then open http://localhost:3000. Inside a container `localhost:27017` is not your host's MongoDB, so session memory uses the in-process fallback unless you set `MONGO_URL`.
 
 1. Enter your research query in the UI.
 2. Toggle **Deep Research Mode** if the topic is complex and requires iterative gap-filling.
