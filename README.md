@@ -94,6 +94,31 @@ docker run --rm -p 3000:3000 --env-file research_system/.env deep-research
 - `research_system/db/`: Session memory (MongoDB with in-process fallback), scratchpad, and the Chroma vector store.
 - `research_system/observabilty/`: Logfire / OpenTelemetry setup (the directory name is spelled this way in the code).
 - `dockerfile`, `otel-collector-config.yaml`: container image and an optional OTel collector config.
+- `tests/`: offline pytest suite. `evals/`: evaluation script, queries and saved results.
+
+## Tests
+
+The suite runs fully offline (LLM, Tavily and MongoDB are mocked; no API keys needed) and is also run by GitHub Actions on every push and pull request:
+```bash
+uv sync
+uv run pytest
+```
+
+## Evaluation
+
+`evals/run_eval.py` runs the pipeline on queries from `evals/queries.json` and records, per run: wall-clock time, the Critique agent's score (0-10), the number of inline citations, the share of cited URLs that return HTTP 200, the share that "resolve", and token usage. A cited URL **resolves** when it returns HTTP 200 and its page text contains at least 50% of the keywords of a sentence in the report that cites it (keyword overlap is a proxy for support, not proof; PDFs and JavaScript-only pages cannot be matched). Cost is only reported if you pass per-million-token prices, because the code has no price table.
+
+```bash
+uv run python evals/run_eval.py -n 3                      # 3 queries (needs Azure OpenAI + Tavily keys)
+uv run python evals/run_eval.py --deep --price-in 2.5 --price-out 10   # all 10, deep mode, with cost
+```
+Each run writes `evals/results/<timestamp>.json` with per-run output and a summary (mean, min, max, n).
+
+Results: **not yet recorded.**
+
+## Demo
+
+Video walkthrough: _link to be added_
 
 ## Architecture Highlights
 
