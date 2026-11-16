@@ -218,7 +218,7 @@ class UsageMeter:
         async def run(agent_self, *args, **kwargs):
             result = await original(agent_self, *args, **kwargs)
             try:
-                u = result.usage()
+                u = result.usage() if callable(result.usage) else result.usage  # property in pydantic-ai 2.x
                 meter.input_tokens += u.input_tokens or 0
                 meter.output_tokens += u.output_tokens or 0
                 meter.requests += u.requests or 0

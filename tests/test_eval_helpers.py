@@ -103,3 +103,17 @@ def test_main_exits_with_code_2_and_names_missing_vars(monkeypatch, capsys):
     monkeypatch.setattr(run_eval, "missing_env", lambda: ["TAVILY_API_KEY"])
     assert run_eval.main(["-n", "1"]) == 2
     assert "TAVILY_API_KEY" in capsys.readouterr().err
+
+
+def test_usage_meter_counts_tokens_from_real_agent_runs():
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    agent = Agent(TestModel())
+    with run_eval.UsageMeter() as meter:
+        asyncio.run(agent.run("hello"))
+        asyncio.run(agent.run("again"))
+    assert meter.requests == 2
+    assert meter.input_tokens > 0 and meter.output_tokens > 0
+    # the patch is removed on exit
+    assert Agent.run.__qualname__ == "AbstractAgent.run"
