@@ -55,7 +55,7 @@ Requirements: Python 3.10-3.13 (`.python-version` pins 3.11) and [uv](https://do
    MAX_SUBAGENTS="4"                  # cap on planner subtasks in standard mode
    MAX_SEARCH_RESULTS_PER_AGENT="5"
 
-   # Optional: observability (Logfire / OpenTelemetry; defaults in research_system/observabilty/config.py)
+   # Optional: observability (Logfire / OpenTelemetry; defaults in research_system/observability/config.py)
    SEND_TO_LOGFIRE="false"            # default false: no Logfire setup needed. true needs LOGFIRE_TOKEN
    LOGFIRE_TOKEN=""                   # only used when SEND_TO_LOGFIRE=true
    CONSOLE_ENABLED="true"
@@ -93,7 +93,7 @@ docker run --rm -p 3000:3000 --env-file .env deep-research
 - `research_system/agents/`: Directory containing all the specialized agent logic (Planner, Search, Outliner, SectionWriter, etc.).
 - `research_system/core/`: Central configuration, schemas, and the Azure OpenAI model factory.
 - `research_system/db/`: Session memory (MongoDB with in-process fallback), scratchpad, and the Chroma vector store.
-- `research_system/observabilty/`: Logfire / OpenTelemetry setup (the directory name is spelled this way in the code).
+- `research_system/observability/`: Logfire / OpenTelemetry setup.
 - `dockerfile`, `otel-collector-config.yaml`: container image and an optional OTel collector config.
 - `tests/`: offline pytest suite. `evals/`: evaluation script, queries and saved results.
 
