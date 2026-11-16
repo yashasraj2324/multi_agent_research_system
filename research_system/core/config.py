@@ -4,8 +4,22 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _ROOT = Path(__file__).parent
-load_dotenv(_ROOT.parent / ".env", override=True)
-load_dotenv(_ROOT.parent.parent / "backend" / ".env", override=True)
+PACKAGE_DIR = _ROOT.parent   # research_system/
+REPO_ROOT = PACKAGE_DIR.parent
+
+
+def load_env_files(repo_root: Path = REPO_ROOT, package_dir: Path = PACKAGE_DIR) -> None:
+    """Load `<repo>/.env`, falling back to `research_system/.env`.
+
+    The root file wins: the package-level file is loaded first and the root file then
+    overrides any key it defines, so the package file only supplies keys the root file
+    lacks. Values in either file take precedence over already-set environment variables.
+    """
+    load_dotenv(package_dir / ".env", override=True)
+    load_dotenv(repo_root / ".env", override=True)
+
+
+load_env_files()
 
 
 class Config:

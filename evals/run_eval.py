@@ -27,7 +27,7 @@ Definition of "resolves" (deliberately simple and mechanical):
 Cost: the code does not know model prices. Cost is reported only when --price-in / --price-out
 (USD per 1M tokens) are passed; otherwise it is null.
 
-Required configuration (env vars or research_system/.env): AZURE_OPENAI_ENDPOINT,
+Required configuration (env vars or .env): AZURE_OPENAI_ENDPOINT,
 AZURE_OPENAI_API_KEY and TAVILY_API_KEY. Without them the script exits before spending anything.
 """
 from __future__ import annotations
@@ -251,7 +251,7 @@ class UsageMeter:
 # ----------------------------------- running ------------------------------------ #
 
 def missing_env() -> list[str]:
-    """Names of required settings that are empty after env + research_system/.env are loaded."""
+    """Names of required settings that are empty after the environment and .env files are loaded."""
     from research_system.core.config import config
 
     values = {
@@ -351,7 +351,7 @@ async def main_async(args) -> int:
 
     missing = missing_env()
     if missing:
-        print("Missing required configuration (set as env vars or in research_system/.env):", file=sys.stderr)
+        print("Missing required configuration (set as env vars or in .env):", file=sys.stderr)
         for name in missing:
             print(f"  - {name}", file=sys.stderr)
         return 2

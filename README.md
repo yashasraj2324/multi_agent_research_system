@@ -31,7 +31,7 @@ Requirements: Python 3.10-3.13 (`.python-version` pins 3.11) and [uv](https://do
    Without `uv sync`: `pip install .` does **not** work (the project has no build configuration). Export the lockfile instead: `uv export --no-hashes --no-dev --no-emit-project -o requirements.txt`, then in a virtualenv `pip install -r requirements.txt`.
 
 2. **Environment variables**:
-   Create the file `research_system/.env` (this is where `research_system/core/config.py` looks; a `.env` in the repo root is **not** read). Real environment variables work too, but values in the file override them.
+   Copy `.env.example` to `.env` in the repository root and fill it in. `research_system/core/config.py` reads `<repo>/.env` first and falls back to `research_system/.env` for any key the root file lacks. Values in these files override variables already set in your shell. The variables:
    ```env
    # Required: Azure OpenAI
    AZURE_OPENAI_ENDPOINT="https://<your-resource-name>.openai.azure.com"
@@ -76,7 +76,7 @@ uv run streamlit run streamlit_app.py
 Run with Docker (the image is built from `dockerfile`; `.env` files are excluded from the image, so pass the variables at run time):
 ```bash
 docker build -t deep-research -f dockerfile .
-docker run --rm -p 3000:3000 --env-file research_system/.env deep-research
+docker run --rm -p 3000:3000 --env-file .env deep-research
 ```
 `--env-file` does not strip quotes, so in the file you pass to Docker write values without quotation marks (e.g. `TAVILY_API_KEY=abc`). Then open http://localhost:3000. Inside a container `localhost:27017` is not your host's MongoDB, so session memory uses the in-process fallback unless you set `MONGO_URL`.
 
