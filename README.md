@@ -107,15 +107,36 @@ uv run pytest
 
 ## Evaluation
 
-`evals/run_eval.py` runs the pipeline on queries from `evals/queries.json` and records, per run: wall-clock time, the Critique agent's score (0-10), the number of inline citations, the share of cited URLs that return HTTP 200, the share that "resolve", and token usage. A cited URL **resolves** when it returns HTTP 200 and its page text contains at least 50% of the keywords of a sentence in the report that cites it (keyword overlap is a proxy for support, not proof; PDFs and JavaScript-only pages cannot be matched). Cost is only reported if you pass per-million-token prices, because the code has no price table.
+`evals/run_eval.py` runs the pipeline on queries from `evals/queries.json` and records, per run: wall-clock time, the Critique agent's score (0-10), the number of citations, two citation-quality shares and token usage.
+
+- **Resolves** (live check): each cited URL is fetched once. It *resolves* when it returns HTTP 200 and its page text contains at least 50% of the keywords (words of 4+ letters minus stop words, plus numbers) of a report sentence that cites it. URLs answering HTTP 403/429 are **unverified** (the site refused our request, so nothing is learned); they are counted separately and excluded from the share. The denominator is the cited URLs with a definite answer (`resolve_n`).
+- **Grounded** (no extra requests): the same keyword test, run against the text the Search agents already retrieved during the run (Tavily result content and arXiv abstracts, captured as returned). Cited sources with no retrieved text cannot be judged and are excluded (`no_retrieved_text`); the denominator is `grounded_n`.
+- Both are keyword-overlap proxies for support, not proof. PDFs and JavaScript-only pages cannot be text-matched, so they count as 200-but-unresolved.
+- **Tokens** are read from the pydantic-ai run results. Cost is computed only from those counts and prices you pass with `--price-in` / `--price-out` (USD per 1M tokens); it is never estimated.
 
 ```bash
-uv run python evals/run_eval.py -n 3                      # 3 queries (needs Azure OpenAI + Tavily keys)
-uv run python evals/run_eval.py --deep --price-in 2.5 --price-out 10   # all 10, deep mode, with cost
+uv run python evals/run_eval.py -n 3                       # first 3 queries (needs Azure OpenAI + Tavily keys)
+uv run python evals/run_eval.py                            # all 10 queries
+uv run python evals/run_eval.py --price-in 1.1 --price-out 4.4   # also compute cost (your own prices)
+uv run python evals/run_eval.py --resume evals/results/<file>.json   # rerun only failed queries
 ```
 Each run writes `evals/results/<timestamp>.json` with per-run output and a summary (mean, min, max, n).
 
-Results: **not yet recorded.**
+**Results** (`evals/results/20261116T131208Z.json`; standard mode, 10 queries, Azure deployment `o4-mini`; 10 of 10 succeeded, no search errors). Runs 5-10 were rerun with `--resume` after a transient Azure connection error failed them in the first attempt, so runs 1-4 come from that earlier attempt:
+
+| Metric | Value | n |
+|---|---|---|
+| Run time | mean 364 s (min 262, max 451) | 10 reports |
+| Critique score | mean 6.6 / 10 (min 6, max 7) | 10 reports |
+| Cited sources per report | mean 16.4 (min 7, max 27) | 10 reports |
+| Resolve share (excl. unverified) | 61.3% pooled (76 / 124); per-report mean 59.6% (min 18.2%, max 100%) | 124 cited URLs |
+| Unverified URLs (HTTP 403/429), excluded above | 40 | 164 cited URLs |
+| Grounded share | 71.5% pooled (108 / 151); per-report mean 75.3% (min 48.0%, max 100%) | 151 cited sources |
+| Cited sources with no retrieved text, excluded above | 13 | 164 cited sources |
+| Tokens per report | mean 305,746 (min 187,559, max 507,955); 2,560,473 input + 496,991 output in total | 10 reports |
+| Cost | not measured (no prices were passed) | - |
+
+This is a single run per query, and the citation checks are keyword-based (no LLM judge), so treat the shares as a rough signal rather than a benchmark.
 
 ## Demo
 
