@@ -152,16 +152,16 @@ This project mirrors Anthropic's "Orchestrator-Worker" pattern. An overarching o
 
 **1. The Subagents View**  
 Displays the Research Console during a Deep Research task. Shows the system spanning multiple parallel search subagents to gather evidence, along with their live progress, finding counts, and confidence scores.
-![The Subagents View](screenshoots/Screenshot%202026-07-16%20192001.png)
+![The Subagents View](screenshots/Screenshot%202026-07-16%20192001.png)
 
 **2. The Critique View**  
 Highlights the post-writing Critique Agent. After generating the massive report, the system audits itself—identifying weaknesses, missing angles, and delivering an honest academic rigor score out of 10.
-![The Critique View](screenshoots/Screenshot%202026-07-16%20192028.png)
+![The Critique View](screenshots/Screenshot%202026-07-16%20192028.png)
 
 **3. The Trace View**  
 Provides a live, behind-the-scenes look into the orchestrator's brain. Shows the Planner Agent decomposing a complex query into targeted subtasks, followed by the parallel spawning of search agents assigned to specific objectives.
-![The Trace View](screenshoots/Screenshot%202026-07-16%20192044.png)
+![The Trace View](screenshots/Screenshot%202026-07-16%20192044.png)
 
 **4. The Export View**  
 Once the multi-agent map-reduce architecture finishes assembling the sections, users can easily extract the final product as a polished Markdown file, a PDF, or raw JSON data.
-![The Export View](screenshoots/Screenshot%202026-07-16%20192057.png)
+![The Export View](screenshots/Screenshot%202026-07-16%20192057.png)
