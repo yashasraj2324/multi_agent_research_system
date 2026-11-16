@@ -9,6 +9,7 @@ venv.bak/
 .git/
 .kiro/
 .qodo/
+.claude/
 .logfire/
 .qodo/
 # Python
