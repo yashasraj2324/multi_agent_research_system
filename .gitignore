@@ -9,9 +9,9 @@ venv.bak/
 .git/
 .kiro/
 .qodo/
+.claude/
 .logfire/
 .qodo/
-tests/
 # Python
 __pycache__/
 *.py[cod]
