@@ -94,7 +94,7 @@ def test_summary_stats_and_cost_not_measured_note():
 
 def test_usage_meter_cost_only_when_prices_given():
     m = run_eval.UsageMeter()
-    m.input_tokens, m.output_tokens = 1_000_000, 500_000
+    m.input_tokens, m.output_tokens, m.requests = 1_000_000, 500_000, 3
     assert m.snapshot(None, None)["cost_usd"] is None
     assert m.snapshot(2.0, 8.0)["cost_usd"] == 6.0
 
@@ -117,3 +117,8 @@ def test_usage_meter_counts_tokens_from_real_agent_runs():
     assert meter.input_tokens > 0 and meter.output_tokens > 0
     # the patch is removed on exit
     assert Agent.run.__qualname__ == "AbstractAgent.run"
+
+
+def test_usage_meter_reports_null_not_zero_when_nothing_was_measured():
+    snap = run_eval.UsageMeter().snapshot(2.0, 8.0)
+    assert snap["total_tokens"] is None and snap["cost_usd"] is None

@@ -235,14 +235,22 @@ class UsageMeter:
         Agent.run = self._original
 
     def snapshot(self, price_in: float | None, price_out: float | None) -> dict:
-        total = self.input_tokens + self.output_tokens
+        """Token counts as read from pydantic-ai run results; cost only from those real counts.
+
+        If no LLM request was counted the usage was not measured, so tokens and cost are null
+        (never 0, which would look like a measurement). Cost is also null unless both prices
+        (USD per 1M tokens) were given; nothing is estimated.
+        """
+        if self.requests == 0:
+            return {"input_tokens": None, "output_tokens": None, "total_tokens": None,
+                    "llm_requests": 0, "cost_usd": None}
         cost = None
         if price_in is not None and price_out is not None:
             cost = self.input_tokens / 1e6 * price_in + self.output_tokens / 1e6 * price_out
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
-            "total_tokens": total,
+            "total_tokens": self.input_tokens + self.output_tokens,
             "llm_requests": self.requests,
             "cost_usd": cost,
         }
