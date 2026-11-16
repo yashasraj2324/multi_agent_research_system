@@ -27,3 +27,12 @@ dependencies = [
     "reportlab>=4.0.0",
     "chromadb>=1.5.9",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
