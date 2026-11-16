@@ -122,3 +122,109 @@ def test_usage_meter_counts_tokens_from_real_agent_runs():
 def test_usage_meter_reports_null_not_zero_when_nothing_was_measured():
     snap = run_eval.UsageMeter().snapshot(2.0, 8.0)
     assert snap["total_tokens"] is None and snap["cost_usd"] is None
+
+
+# ---------------- unverified (403/429) and grounded checks ----------------
+
+def test_403_and_429_are_unverified_and_excluded_from_resolve_denominator(monkeypatch):
+    report = _report("Alpha words appear here [1]. Bravo words appear here [2]. Charlie words appear here [3]. Delta words appear here [4].", 4)
+    pages = {
+        "https://example.com/1": {"status": 200, "text": "alpha words appear here", "error": None},
+        "https://example.com/2": {"status": 403, "text": "", "error": None},
+        "https://example.com/3": {"status": 429, "text": "", "error": None},
+        "https://example.com/4": {"status": 404, "text": "", "error": None},
+    }
+
+    async def fake_fetch(client, url):
+        return pages[url]
+
+    monkeypatch.setattr(run_eval, "fetch_page", fake_fetch)
+    out = asyncio.run(run_eval.check_citations(report))
+    assert out["sources_cited"] == 4
+    assert out["url_unverified"] == 2 and out["url_failed"] == 1 and out["url_ok"] == 1
+    assert out["resolve_n"] == 2                     # the 200 and the 404; 403/429 excluded
+    assert out["url_resolve_share"] == 0.5
+    assert [d["category"] for d in out["urls"]] == ["ok", "unverified", "unverified", "failed"]
+
+
+def test_network_error_is_failed_not_unverified(monkeypatch):
+    report = _report("Alpha words appear here [1].", 1)
+
+    async def fake_fetch(client, url):
+        return {"status": None, "text": "", "error": "ConnectError: boom"}
+
+    monkeypatch.setattr(run_eval, "fetch_page", fake_fetch)
+    out = asyncio.run(run_eval.check_citations(report))
+    assert out["url_failed"] == 1 and out["url_unverified"] == 0 and out["resolve_n"] == 1
+
+
+def test_grounded_uses_retrieved_text_and_excludes_urls_without_any(monkeypatch):
+    report = _report(
+        "Solid state cells reach higher density [1]. Unrelated zebra giraffe claim [2]. Another sourced statement here [3].", 3
+    )
+
+    async def fake_fetch(client, url):  # page contents are irrelevant to grounding
+        return {"status": 403, "text": "", "error": None}
+
+    monkeypatch.setattr(run_eval, "fetch_page", fake_fetch)
+    retrieved = {
+        "https://example.com/1": ["Solid state cells reach higher density in lab tests"],
+        "https://example.com/2": ["completely different content about batteries"],
+        # source 3 has no retrieved text
+    }
+    out = asyncio.run(run_eval.check_citations(report, retrieved))
+    assert out["grounded_n"] == 2 and out["grounded"] == 1 and out["grounded_share"] == 0.5
+    assert out["no_retrieved_text"] == 1
+    assert [d["grounded"] for d in out["urls"]] == [True, False, None]
+
+
+def test_grounded_matches_urls_after_normalisation(monkeypatch):
+    report = ResearchReport(
+        title="T", executive_summary="E",
+        sections=[ReportSection(heading="H", body_markdown="Solid state cells reach higher density [1].")],
+        all_sources=[SourceCitation(id="1", title="t", url="https://Example.com/a/")],
+    )
+
+    async def fake_fetch(client, url):
+        return {"status": 200, "text": "", "error": None}
+
+    monkeypatch.setattr(run_eval, "fetch_page", fake_fetch)
+    retrieved = {run_eval.normalize_url("https://example.com/a#x"): ["solid state cells reach higher density"]}
+    assert asyncio.run(run_eval.check_citations(report, retrieved))["grounded"] == 1
+
+
+def test_classify_status():
+    assert [run_eval.classify_status(s) for s in (200, 403, 429, 404, 500, None)] == [
+        "ok", "unverified", "unverified", "failed", "failed", "failed",
+    ]
+
+
+def test_retrieval_capture_records_results_and_counts_search_errors(monkeypatch):
+    from research_system.tools.search import TavilySearchTool
+
+    async def fake_search(self, query, max_results=None):
+        return [
+            {"title": "Page", "url": "https://Example.com/p/", "content": "retrieved body text"},
+            {"title": "search_error", "url": "", "content": "quota exceeded"},
+        ]
+
+    monkeypatch.setattr(TavilySearchTool, "search", fake_search)
+    with run_eval.RetrievalCapture() as cap:
+        asyncio.run(TavilySearchTool().search("q"))
+    assert "retrieved body text" in cap.texts["https://example.com/p"][0]
+    assert cap.search_errors == 1
+    assert TavilySearchTool.search is fake_search  # patch removed on exit
+
+
+def test_summary_pools_resolve_and_grounded_counts():
+    base = {"runtime_s": 1.0, "usage": {"total_tokens": 1, "cost_usd": None}}
+    runs = [
+        {**base, "resolves": 3, "resolve_n": 4, "grounded": 1, "grounded_n": 2, "url_unverified": 2, "no_retrieved_text": 1,
+         "url_resolve_share": 0.75, "grounded_share": 0.5, "search_errors": 0},
+        {**base, "resolves": 1, "resolve_n": 4, "grounded": 2, "grounded_n": 2, "url_unverified": 0, "no_retrieved_text": 0,
+         "url_resolve_share": 0.25, "grounded_share": 1.0, "search_errors": 1},
+    ]
+    s = run_eval.build_summary(runs, 2)
+    assert s["pooled_resolve"] == {"numerator": 4, "denominator": 8, "share": 0.5}
+    assert s["pooled_grounded"] == {"numerator": 3, "denominator": 4, "share": 0.75}
+    assert s["pooled_unverified_urls"] == 2 and s["search_errors"] == 1

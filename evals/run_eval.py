@@ -10,19 +10,28 @@ Per run it records:
   * critique_score       Critique agent's overall_score (0-10); null if the critique failed
   * citation_markers     number of inline [n] markers in the report body that point at a listed source
   * sources_cited        number of distinct listed sources that are cited at least once
-  * url_200_share        share of cited sources whose URL answers HTTP 200 (after redirects)
-  * url_resolve_share    share of cited sources that "resolve" (definition below)
-  * tokens / cost        token usage measured from pydantic-ai run results; cost only if prices are given
+  * url_unverified       cited URLs that answered HTTP 403/429; the site refused our request, so they are
+                         counted separately and excluded from the resolve share (not treated as failed)
+  * url_200_share        share of the remaining cited URLs that answer HTTP 200 (after redirects)
+  * url_resolve_share    share of the remaining cited URLs that "resolve" (definition below); resolve_n is
+                         the denominator
+  * grounded_share       share of cited sources whose already-retrieved text supports a claim citing them
+                         (definition below); grounded_n is the denominator
+  * usage                token counts read from pydantic-ai run results; cost only from --price-in/--price-out
 
-Definition of "resolves" (deliberately simple and mechanical):
-  A cited source resolves when (1) a GET on its URL ends in HTTP 200 and (2) the page text contains
-  the keywords of the claim it is cited for. A "claim" is a sentence of the report body that carries
-  the marker [n]. Its keywords are the lower-cased words of >= 4 letters that are not stop words, plus
-  any number tokens. The page supports the claim when at least KEYWORD_THRESHOLD (50%) of those
+Definition of "resolves": a cited source resolves when (1) a GET on its URL ends in HTTP 200 and (2) the
+  fetched page text contains the keywords of a claim it is cited for. A "claim" is a sentence of the report
+  body that carries the marker [n]. Its keywords are the lower-cased words of >= 4 letters that are not stop
+  words, plus number tokens. The page supports the claim when at least KEYWORD_THRESHOLD (50%) of those
   keywords occur in the page text. A source resolves if it supports at least one sentence citing it.
-  Limits: non-HTML pages (PDF etc.) cannot be text-matched and so count as 200-but-unresolved; pages
-  that need JavaScript or block bots can fail even when the citation is legitimate; keyword overlap is
-  a proxy for support, not proof of it.
+  Limits: non-HTML pages (PDF etc.) cannot be text-matched and count as 200-but-unresolved; JavaScript-only
+  pages can fail although the citation is legitimate; keyword overlap is a proxy for support, not proof.
+
+Definition of "grounded": the same keyword test, but against the text the Search agents already retrieved
+  during the run (Tavily result content and arXiv abstracts, captured as they are returned; no extra network
+  calls) instead of a freshly fetched page. Sources whose URL has no retrieved text cannot be judged and are
+  reported as no_retrieved_text, outside the grounded denominator. The agent only saw each Tavily result's
+  first 1200 characters, so this checks the citation against what the pipeline actually had in hand.
 
 Cost: the code does not know model prices. Cost is reported only when --price-in / --price-out
 (USD per 1M tokens) are passed; otherwise it is null.
@@ -42,6 +51,7 @@ import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -52,6 +62,7 @@ RESULTS_DIR = ROOT / "evals" / "results"
 REQUIRED_ENV = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "TAVILY_API_KEY")
 
 KEYWORD_THRESHOLD = 0.5
+UNVERIFIED_STATUSES = frozenset({403, 429})
 FETCH_TIMEOUT_S = 15.0
 MAX_PAGE_BYTES = 2_000_000
 USER_AGENT = "Mozilla/5.0 (compatible; research-eval/1.0)"
@@ -159,13 +170,105 @@ async def fetch_page(client, url: str) -> dict:
     return {"status": resp.status_code, "text": text, "error": None}
 
 
-async def check_citations(report) -> dict:
-    """Fetch each cited source once and decide 200 / resolves. Returns metrics + per-URL detail."""
+def normalize_url(url: str) -> str:
+    """Normalise a URL for matching: lower-case scheme/host, drop fragment and trailing slash."""
+    if not url:
+        return ""
+    parts = urlsplit(url.strip())
+    path = parts.path.rstrip("/") or parts.path
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+
+class RetrievalCapture:
+    """Records the source text the Search agents already retrieved (no extra network calls).
+
+    Wraps TavilySearchTool.search and the arXiv tool used by the search agent, keeping
+    url -> [text] for every result they return. `search_errors` counts Tavily calls that
+    returned an error / not-configured stub instead of results.
+    """
+
+    def __init__(self) -> None:
+        self.texts: dict[str, list[str]] = {}
+        self.search_errors = 0
+        self._restore: list = []
+
+    def _add(self, url: str, text: str) -> None:
+        key = normalize_url(url)
+        if key and text:
+            self.texts.setdefault(key, []).append(text)
+
+    def __enter__(self):
+        from research_system.agents import search as search_agent
+        from research_system.tools.search import TavilySearchTool
+
+        capture = self
+        orig_tavily = TavilySearchTool.search
+        orig_arxiv = search_agent.arxiv_search
+
+        async def tavily_search(tool_self, *args, **kwargs):
+            results = await orig_tavily(tool_self, *args, **kwargs)
+            for r in results:
+                if r.get("title") in ("search_error", "tavily_not_configured"):
+                    capture.search_errors += 1
+                else:
+                    capture._add(r.get("url", ""), f"{r.get('title', '')} {r.get('content') or ''}")
+            return results
+
+        async def arxiv_search(*args, **kwargs):
+            results = await orig_arxiv(*args, **kwargs)
+            for r in results:
+                text = f"{r.get('title', '')} {r.get('abstract') or ''}"
+                capture._add(r.get("url", ""), text)
+                capture._add(r.get("pdf_url", ""), text)
+            return results
+
+        TavilySearchTool.search = tavily_search
+        search_agent.arxiv_search = arxiv_search
+        self._restore = [(TavilySearchTool, "search", orig_tavily), (search_agent, "arxiv_search", orig_arxiv)]
+        return self
+
+    def __exit__(self, *exc):
+        for obj, name, original in self._restore:
+            setattr(obj, name, original)
+
+
+def classify_status(status: int | None) -> str:
+    """'ok' (HTTP 200), 'unverified' (403/429: the site refused a bot, so we learn nothing), else 'failed'."""
+    if status == 200:
+        return "ok"
+    if status in UNVERIFIED_STATUSES:
+        return "unverified"
+    return "failed"
+
+
+def is_grounded(retrieved_texts: list[str], claim_sets: list[set[str]]) -> bool | None:
+    """Do the already-retrieved texts support at least one claim citing the source?
+
+    Returns None when nothing was retrieved for the URL (cannot be judged).
+    """
+    if not retrieved_texts:
+        return None
+    joined = " ".join(retrieved_texts)
+    return any(supports(joined, kw) for kw in claim_sets)
+
+
+def _share(num: int, den: int) -> float | None:
+    return (num / den) if den else None
+
+
+async def check_citations(report, retrieved: dict[str, list[str]] | None = None) -> dict:
+    """Fetch each cited source once and classify it. Returns metrics + per-URL detail.
+
+    resolve_share  = resolves / (cited sources with a definite answer), i.e. excluding
+                     "unverified" (HTTP 403/429); resolve_n is that denominator.
+    grounded_share = grounded / (cited sources with retrieved text); grounded_n is that
+                     denominator and no_retrieved_text counts the rest.
+    """
     import httpx
 
+    retrieved = retrieved or {}
     claims = extract_claims(report)
     cited = sorted(claims)
-    details = []
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=FETCH_TIMEOUT_S,
@@ -173,26 +276,41 @@ async def check_citations(report) -> dict:
     ) as client:
         pages = await asyncio.gather(*[fetch_page(client, report.all_sources[n - 1].url) for n in cited])
 
+    details = []
     for n, page in zip(cited, pages):
-        ok_200 = page["status"] == 200
-        resolves = ok_200 and any(supports(page["text"], kw) for kw in claims[n])
+        url = report.all_sources[n - 1].url
+        category = classify_status(page["status"])
+        resolves = category == "ok" and any(supports(page["text"], kw) for kw in claims[n])
+        grounded = is_grounded(retrieved.get(normalize_url(url), []), claims[n])
         details.append(
             {
                 "n": n,
-                "url": report.all_sources[n - 1].url,
+                "url": url,
                 "status": page["status"],
                 "error": page["error"],
-                "is_200": ok_200,
+                "category": category,
                 "resolves": resolves,
+                "grounded": grounded,
                 "claims_checked": len(claims[n]),
             }
         )
 
-    total = len(details)
+    counts = {c: sum(d["category"] == c for d in details) for c in ("ok", "unverified", "failed")}
+    resolve_n = counts["ok"] + counts["failed"]
+    judged = [d for d in details if d["grounded"] is not None]
     return {
-        "sources_cited": total,
-        "url_200_share": (sum(d["is_200"] for d in details) / total) if total else None,
-        "url_resolve_share": (sum(d["resolves"] for d in details) / total) if total else None,
+        "sources_cited": len(details),
+        "url_ok": counts["ok"],
+        "url_unverified": counts["unverified"],
+        "url_failed": counts["failed"],
+        "url_200_share": _share(counts["ok"], resolve_n),
+        "resolve_n": resolve_n,
+        "resolves": sum(d["resolves"] for d in details),
+        "url_resolve_share": _share(sum(d["resolves"] for d in details), resolve_n),
+        "grounded_n": len(judged),
+        "grounded": sum(d["grounded"] for d in judged),
+        "grounded_share": _share(sum(d["grounded"] for d in judged), len(judged)),
+        "no_retrieved_text": len(details) - len(judged),
         "urls": details,
     }
 
@@ -279,9 +397,10 @@ async def run_one(query: str, args) -> dict:
     record: dict = {"query": query, "mode": "deep" if args.deep else "standard", "error": None}
     orch = ResearchOrchestrator(deep=args.deep)
     meter = UsageMeter()
+    capture = RetrievalCapture()
     start = time.perf_counter()
     try:
-        with meter:
+        with meter, capture:
             plan, findings, report, critique = await asyncio.wait_for(orch.run(query), timeout=args.timeout)
     except Exception as exc:  # noqa: BLE001
         record["runtime_s"] = round(time.perf_counter() - start, 2)
@@ -295,13 +414,10 @@ async def run_one(query: str, args) -> dict:
     record["citation_markers"] = count_citation_markers(report)
     record["sources_listed"] = len(report.all_sources)
     record["subtasks"] = len(plan.subtasks)
-    checks = await check_citations(report)
-    record.update(
-        sources_cited=checks["sources_cited"],
-        url_200_share=checks["url_200_share"],
-        url_resolve_share=checks["url_resolve_share"],
-        url_checks=checks["urls"],
-    )
+    record["search_errors"] = capture.search_errors
+    checks = await check_citations(report, capture.texts)
+    record.update({k: v for k, v in checks.items() if k != "urls"})
+    record["url_checks"] = checks["urls"]
     record["report"] = report.model_dump(mode="json")
     record["critique"] = critique.model_dump(mode="json") if critique else None
     return record
@@ -319,6 +435,13 @@ def summarise(values: list) -> dict:
     }
 
 
+def pooled(runs: list[dict], num_key: str, den_key: str) -> dict:
+    """Counts summed over all runs (every cited source weighs the same, whatever its run)."""
+    num = sum(r.get(num_key) or 0 for r in runs)
+    den = sum(r.get(den_key) or 0 for r in runs)
+    return {"numerator": num, "denominator": den, "share": _share(num, den)}
+
+
 def build_summary(runs: list[dict], requested: int) -> dict:
     ok = [r for r in runs if not r.get("error")]
     metrics = {
@@ -326,12 +449,19 @@ def build_summary(runs: list[dict], requested: int) -> dict:
         "critique_score": [r.get("critique_score") for r in ok],
         "citation_markers": [r.get("citation_markers") for r in ok],
         "sources_cited": [r.get("sources_cited") for r in ok],
+        "url_unverified": [r.get("url_unverified") for r in ok],
         "url_200_share": [r.get("url_200_share") for r in ok],
         "url_resolve_share": [r.get("url_resolve_share") for r in ok],
+        "grounded_share": [r.get("grounded_share") for r in ok],
         "total_tokens": [r["usage"]["total_tokens"] for r in ok],
         "cost_usd": [r["usage"]["cost_usd"] for r in ok],
     }
     summary = {name: summarise(vals) for name, vals in metrics.items()}
+    summary["pooled_resolve"] = pooled(ok, "resolves", "resolve_n")
+    summary["pooled_grounded"] = pooled(ok, "grounded", "grounded_n")
+    summary["pooled_unverified_urls"] = sum(r.get("url_unverified") or 0 for r in ok)
+    summary["pooled_no_retrieved_text"] = sum(r.get("no_retrieved_text") or 0 for r in ok)
+    summary["search_errors"] = sum(r.get("search_errors") or 0 for r in runs)
     summary["runs_requested"] = requested
     summary["runs_succeeded"] = len(ok)
     summary["runs_failed"] = len(runs) - len(ok)
@@ -373,7 +503,9 @@ async def main_async(args) -> int:
         runs.append(rec)
         status = f"ERROR {rec['error']}" if rec["error"] else (
             f"{rec['runtime_s']}s, critique={rec['critique_score']}, "
-            f"cited={rec['sources_cited']}, resolve={rec['url_resolve_share']}"
+            f"cited={rec['sources_cited']}, resolve={rec['url_resolve_share']} (n={rec['resolve_n']}, "
+            f"unverified={rec['url_unverified']}), grounded={rec['grounded_share']} (n={rec['grounded_n']}), "
+            f"search_errors={rec['search_errors']}"
         )
         print(f"    -> {status}", flush=True)
 
