@@ -14,54 +14,86 @@ Built using `pydantic-ai` and Streamlit, this system orchestrates a team of spec
   - **Summarizer**: Synthesizes the raw data into a digestible brief.
   - **Outliner**: Structures the final report.
   - **Section Writers**: Write distinct report sections concurrently.
-  - **Citation Agent**: Performs a final audit pass to ensure all claims are accurately attributed to their sources.
+  - **Citation Agent**: In Deep Research Mode, performs a final audit pass to ensure all claims are accurately attributed to their sources.
   - **Critique Agent**: Evaluates the report for biases, missing angles, and rigor.
 - **Azure OpenAI Integration**: Fully localized to use enterprise-grade Azure OpenAI models.
 
 ## Setup & Installation
 
-1. **Clone the repository and install dependencies**:
-   Ensure you have Python 3.10+ installed.
-   ```bash
-   pip install -r backend/requirements.txt
-   ```
+Requirements: Python 3.10-3.13 (`.python-version` pins 3.11) and [uv](https://docs.astral.sh/uv/). Dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
 
-2. **Environment Variables**:
-   Create a `.env` file in the `backend/` directory with the following variables:
+1. **Clone and install dependencies**:
+   ```bash
+   git clone https://github.com/yashasraj2324/multi_agent_research_system.git
+   cd multi_agent_research_system
+   uv sync
+   ```
+   Without `uv sync`: `pip install .` does **not** work (the project has no build configuration). Export the lockfile instead: `uv export --no-hashes --no-dev --no-emit-project -o requirements.txt`, then in a virtualenv `pip install -r requirements.txt`.
+
+2. **Environment variables**:
+   Create the file `research_system/.env` (this is where `research_system/core/config.py` looks; a `.env` in the repo root is **not** read). Real environment variables work too, but values in the file override them.
    ```env
-   # Azure OpenAI Configuration
+   # Required: Azure OpenAI
    AZURE_OPENAI_ENDPOINT="https://<your-resource-name>.openai.azure.com"
    AZURE_OPENAI_API_KEY="your-api-key"
-   AZURE_OPENAI_DEPLOYMENT="your-deployment-name" # e.g. gpt-4o
-   AZURE_OPENAI_API_VERSION="2024-02-01"
+   AZURE_OPENAI_DEPLOYMENT="your-deployment-name"   # or AZURE_OPENAI_DEPLOYMENT_NAME; default gpt-4o
+   AZURE_OPENAI_API_VERSION="2024-02-01"            # default
 
-   # Tavily Search API
+   # Required for web search (without it search returns a "not configured" stub)
    TAVILY_API_KEY="your-tavily-api-key"
 
-   # Database (Optional for memory persistence)
+   # Optional: session memory (falls back to in-process memory if MongoDB is unreachable)
    MONGO_URL="mongodb://localhost:27017"
    DB_NAME="research_agents"
+
+   # Optional: Chroma Cloud for semantic memory (falls back to a local ./chroma_db)
+   CHROMA_API_KEY=""
+   CHROMA_TENANT=""
+   CHROMA_DATABASE="default"
+
+   # Optional: runtime tuning
+   MAX_SUBAGENTS="4"                  # cap on planner subtasks in standard mode
+   MAX_SEARCH_RESULTS_PER_AGENT="5"
+
+   # Optional: observability (Logfire / OpenTelemetry; defaults in research_system/observabilty/config.py)
+   SEND_TO_LOGFIRE="false"            # default is true; see note below
+   CONSOLE_ENABLED="true"
+   OTLP_ENDPOINT=""                   # custom OTel collector, e.g. http://localhost:4318
+   SERVICE_NAME="multi-agent-research"
    ```
+   **Set `SEND_TO_LOGFIRE=false` unless you have Logfire credentials** (`uv run logfire auth` or `LOGFIRE_TOKEN`). With the default and no credentials, Logfire asks for a login interactively at startup, which fails in non-interactive runs such as Docker.
+
+   `LLM_PROVIDER`, `LEAD_MODEL` and `HISTORY_DB_PATH` are read in `config.py`, but only Azure OpenAI is implemented and the other two are not used elsewhere in the code.
 
 ## Usage
 
-Start the Streamlit application:
+Run the Streamlit app locally (served on http://localhost:3000, set in `.streamlit/config.toml`):
 ```bash
-streamlit run streamlit_app.py
+uv run streamlit run streamlit_app.py
 ```
+
+Run with Docker (the image is built from `dockerfile`; `.env` files are excluded from the image, so pass the variables at run time):
+```bash
+docker build -t deep-research -f dockerfile .
+docker run --rm -p 3000:3000 --env-file research_system/.env deep-research
+```
+`--env-file` does not strip quotes, so in the file you pass to Docker write values without quotation marks (e.g. `SEND_TO_LOGFIRE=false`). Then open http://localhost:3000. Inside a container `localhost:27017` is not your host's MongoDB, so session memory uses the in-process fallback unless you set `MONGO_URL`.
 
 1. Enter your research query in the UI.
 2. Toggle **Deep Research Mode** if the topic is complex and requires iterative gap-filling.
 3. Watch the live agent trace as subagents plan, search, review, and write your report.
 4. The final report will be displayed with proper markdown formatting and inline citations.
+5. Follow-up chat messages are routed by an intent router (answer from saved context, run a targeted gap-filling search, consolidate a report, or start a full run).
 
 ## Project Structure
 
 - `streamlit_app.py`: The frontend UI and live agent trace viewer.
 - `research_system/orchestrator.py`: The core orchestrator managing the multi-agent pipeline.
 - `research_system/agents/`: Directory containing all the specialized agent logic (Planner, Search, Outliner, SectionWriter, etc.).
-- `research_system/core/`: Central configurations, schemas, and LLM integrations.
-- `docs/`: Product Requirements and architectural documentation.
+- `research_system/core/`: Central configuration, schemas, and the Azure OpenAI model factory.
+- `research_system/db/`: Session memory (MongoDB with in-process fallback), scratchpad, and the Chroma vector store.
+- `research_system/observabilty/`: Logfire / OpenTelemetry setup (the directory name is spelled this way in the code).
+- `dockerfile`, `otel-collector-config.yaml`: container image and an optional OTel collector config.
 
 ## Architecture Highlights
 
